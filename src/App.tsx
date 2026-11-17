@@ -1,1035 +1,143 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePrivy } from '@privy-io/react-auth';
-import { createPublicClient, formatEther, http } from 'viem';
-import { mainnet, base } from 'viem/chains';
-import { Connection, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
-import {
-  Activity,
-  ArrowLeftRight,
-  ArrowUpRight,
-  Check,
-  CircleHelp,
-  Clock3,
-  Copy,
-  Eye,
-  EyeOff,
-  LayoutDashboard,
-  LineChart,
-  LogOut,
-  Menu,
-  RefreshCw,
-  Settings,
-  ShieldCheck,
-  Sparkles,
-  Wallet,
-  X,
-} from 'lucide-react';
-import type { AppSection, NavigationItem } from './types';
+import { useWallets, useSignAndSendTransaction } from '@privy-io/react-auth/solana';
+import { Connection, PublicKey, VersionedTransaction, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { getMint } from '@solana/spl-token';
+import { QRCodeSVG } from 'qrcode.react';
+import { Activity, ArrowDownUp, ArrowLeftRight, BarChart3, CheckCircle2, ChevronDown, CircleHelp, Copy, ExternalLink, LogOut, Menu, QrCode, RefreshCw, Search, ShieldCheck, Wallet, X, Zap } from 'lucide-react';
 
-type WalletAccount = {
-  type?: string;
-  chainType?: string;
-  address?: string;
-};
-
-type Prices = {
-  ethereum: number;
-  solana: number;
-};
-
-type Balances = {
-  ethereum: number;
-  base: number;
-  solana: number;
-};
-
-type LifiQuote = {
-  estimate?: {
-    toAmount?: string;
-    toAmountMin?: string;
-    executionDuration?: number;
-    feeCosts?: Array<{ amountUSD?: string; name?: string }>;
-    gasCosts?: Array<{ amountUSD?: string; amount?: string; token?: { symbol?: string } }>;
-  };
-  tool?: string;
-  action?: {
-    fromToken?: { symbol?: string };
-    toToken?: { symbol?: string };
-  };
-};
-
-const LIFI_NATIVE_TOKENS: Record<string, string> = {
-  '1': '0x0000000000000000000000000000000000000000',
-  '8453': '0x0000000000000000000000000000000000000000',
-  '1151111081099710': 'So11111111111111111111111111111111111111112',
-};
-
-const LIFI_CHAINS = [
-  { id: '1', label: 'Ethereum', symbol: 'ETH' },
-  { id: '8453', label: 'Base', symbol: 'ETH' },
-  { id: '1151111081099710', label: 'Solana', symbol: 'SOL' },
-];
-
-function formatQuoteAmount(raw?: string, chainId?: string) {
-  if (!raw || !/^\\d+$/.test(raw)) return '—';
-  const decimals = chainId === '1151111081099710' ? 9 : 18;
-  try {
-    const value = BigInt(raw);
-    const base = 10n ** BigInt(decimals);
-    const whole = value / base;
-    const fraction = (value % base).toString().padStart(decimals, '0').slice(0, 6);
-    return `${whole.toString()}${fraction === '000000' ? '' : `.${fraction.replace(/0+$/, '')}`}`;
-  } catch {
-    return '—';
-  }
-}
-
-const ethereumClient = createPublicClient({
-  chain: mainnet,
-  transport: http('https://ethereum-rpc.publicnode.com'),
-});
-
-const baseClient = createPublicClient({
-  chain: base,
-  transport: http('https://base-rpc.publicnode.com'),
-});
-
-const solanaConnection = new Connection(
-  'https://api.mainnet-beta.solana.com',
-  'confirmed'
-);
-
-const navigation: NavigationItem[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'markets', label: 'Markets' },
-  { id: 'swap', label: 'Swap' },
-  { id: 'portfolio', label: 'Portfolio' },
-  { id: 'activity', label: 'Activity' },
-  { id: 'watchlist', label: 'Watchlist' },
-  { id: 'settings', label: 'Settings' },
-];
-
-const navIcons = {
-  overview: LayoutDashboard,
-  markets: LineChart,
-  swap: ArrowLeftRight,
-  portfolio: Wallet,
-  activity: Activity,
-  watchlist: Eye,
-  settings: Settings,
-};
-
-const formatUSD = (value: number) =>
-  new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 2,
-  }).format(value);
-
-const formatToken = (value: number, digits = 5) =>
-  new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: digits,
-  }).format(value);
-
-function shortenAddress(address?: string) {
-  if (!address) return 'Not connected';
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
+type Pair = { chainId: string; dexId: string; url: string; pairAddress: string; baseToken: { address: string; name: string; symbol: string }; quoteToken: { address: string; name: string; symbol: string }; priceUsd?: string; liquidity?: { usd?: number }; volume?: { h24?: number }; fdv?: number; marketCap?: number };
+type Quote = { estimate?: { toAmount?: string; toAmountMin?: string; executionDuration?: number; feeCosts?: Array<{ amountUSD?: string; name?: string }> }; transactionRequest?: { data?: string }; toolDetails?: { name?: string }; action?: { fromToken?: { symbol?: string }; toToken?: { symbol?: string } }; [key: string]: unknown };
+const SOL = 'So11111111111111111111111111111111111111112';
+const SOLANA_CHAIN = '1151111081099710';
+const rpc = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+const money = (n?: number) => typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: n < 1 ? 6 : 2 }) : '—';
+const short = (s: string) => `${s.slice(0, 5)}…${s.slice(-5)}`;
+function rawAmount(value: string, decimals: number) { if (!/^\d+(\.\d*)?$/.test(value) || Number(value) <= 0) throw new Error('Enter a valid amount.'); const [whole, fraction = ''] = value.split('.'); if (fraction.length > decimals) throw new Error(`This token supports up to ${decimals} decimal places.`); return (BigInt(whole) * (10n ** BigInt(decimals)) + BigInt((fraction + '0'.repeat(decimals)).slice(0, decimals) || '0')).toString(); }
 function App() {
-  const { ready, authenticated, user, login, logout } = usePrivy();
-
-  const [section, setSection] = useState<AppSection>('overview');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [hidden, setHidden] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const { ready, authenticated, login, logout, user } = usePrivy();
+  const { wallets, ready: walletsReady } = useWallets();
+  const { signAndSendTransaction } = useSignAndSendTransaction();
+  const wallet = wallets[0];
+  const address = wallet?.address ?? '';
+  const [tab, setTab] = useState<'trade'|'markets'|'receive'|'activity'>('trade');
+  const [mode, setMode] = useState<'buy'|'sell'>('buy');
+  const [mintInput, setMintInput] = useState('');
+  const [amount, setAmount] = useState('0.1');
+  const [tokenDecimals, setTokenDecimals] = useState(6);
+  const [tokenSymbol, setTokenSymbol] = useState('TOKEN');
+  const [tokenName, setTokenName] = useState('Select a Solana token');
+  const [pair, setPair] = useState<Pair | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [balance, setBalance] = useState<number | null>(null);
+  const [history, setHistory] = useState<Array<{sig:string;side:string;token:string;time:string}>>([]);
   const [copied, setCopied] = useState(false);
-  const [swapFromChain, setSwapFromChain] = useState('1');
-  const [swapToChain, setSwapToChain] = useState('8453');
-  const [swapAmount, setSwapAmount] = useState('');
-  const [swapQuote, setSwapQuote] = useState<LifiQuote | null>(null);
-  const [swapLoading, setSwapLoading] = useState(false);
-  const [swapError, setSwapError] = useState('');
+  const [mobileMenu, setMobileMenu] = useState(false);
 
-  const [prices, setPrices] = useState<Prices>({
-    ethereum: 0,
-    solana: 0,
-  });
+  useEffect(() => { if (!address) { setBalance(null); return; } let live = true; const load = async () => { try { const lamports = await rpc.getBalance(new PublicKey(address)); if (live) setBalance(lamports / LAMPORTS_PER_SOL); } catch { if (live) setBalance(null); } }; void load(); const timer = window.setInterval(load, 25000); return () => { live = false; window.clearInterval(timer); }; }, [address]);
 
-  const [balances, setBalances] = useState<Balances>({
-    ethereum: 0,
-    base: 0,
-    solana: 0,
-  });
+  const chartPair = pair?.pairAddress;
+  const explorer = useMemo(() => address ? `https://solscan.io/account/${address}` : 'https://solscan.io', [address]);
 
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-
-  const accounts = useMemo(
-    () => (user?.linkedAccounts ?? []) as WalletAccount[],
-    [user]
-  );
-
-  const walletAccounts = useMemo(
-    () =>
-      accounts.filter(
-        (account) => account.type === 'wallet' && Boolean(account.address)
-      ),
-    [accounts]
-  );
-
-  const ethereumAddress = useMemo(
-    () =>
-      walletAccounts.find(
-        (account) =>
-          account.chainType === 'ethereum' &&
-          account.address?.startsWith('0x')
-      )?.address ??
-      walletAccounts.find((account) => account.address?.startsWith('0x'))
-        ?.address ??
-      '',
-    [walletAccounts]
-  );
-
-  const solanaAddress = useMemo(
-    () =>
-      walletAccounts.find(
-        (account) =>
-          account.chainType === 'solana' &&
-          Boolean(account.address) &&
-          !account.address?.startsWith('0x')
-      )?.address ??
-      walletAccounts.find(
-        (account) =>
-          Boolean(account.address) && !account.address?.startsWith('0x')
-      )?.address ??
-      '',
-    [walletAccounts]
-  );
-
-  const loadPrices = useCallback(async () => {
+  async function searchToken(value = mintInput) {
+    const query = value.trim(); if (!query) { setError('Enter a token name, symbol or mint address.'); return; }
+    setSearching(true); setError(''); setQuote(null); setPair(null);
     try {
-      const response = await fetch(
-        'https://api.coingecko.com/api/v3/simple/price?ids=ethereum,solana&vs_currencies=usd'
-      );
-
-      if (!response.ok) throw new Error('Price service unavailable');
-
-      const data: {
-        ethereum?: { usd?: number };
-        solana?: { usd?: number };
-      } = await response.json();
-
-      setPrices({
-        ethereum: Number(data.ethereum?.usd ?? 0),
-        solana: Number(data.solana?.usd ?? 0),
-      });
-    } catch {
-      setError('Market prices could not be refreshed.');
-    }
-  }, []);
-
-  const loadBalances = useCallback(async () => {
-    if (!authenticated) {
-      setBalances({ ethereum: 0, base: 0, solana: 0 });
-      setLastUpdated(null);
-      return;
-    }
-
-    if (!ethereumAddress && !solanaAddress) {
-      setBalances({ ethereum: 0, base: 0, solana: 0 });
-      setError('No supported wallet address was found in your Privy account.');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    const next: Balances = {
-      ethereum: 0,
-      base: 0,
-      solana: 0,
-    };
-
-    const failures: string[] = [];
-
-    if (ethereumAddress) {
-      try {
-        const address = ethereumAddress as `0x${string}`;
-        const [ethBalance, baseBalance] = await Promise.all([
-          ethereumClient.getBalance({ address }),
-          baseClient.getBalance({ address }),
-        ]);
-
-        next.ethereum = Number(formatEther(ethBalance));
-        next.base = Number(formatEther(baseBalance));
-      } catch {
-        failures.push('Ethereum/Base');
-      }
-    }
-
-    if (solanaAddress) {
-      try {
-        const publicKey = new PublicKey(solanaAddress);
-        const lamports = await solanaConnection.getBalance(publicKey);
-        next.solana = lamports / LAMPORTS_PER_SOL;
-      } catch {
-        failures.push('Solana');
-      }
-    }
-
-    setBalances(next);
-    setLastUpdated(new Date());
-
-    if (failures.length > 0) {
-      setError(`Could not refresh ${failures.join(' and ')} balance.`);
-    }
-
-    setLoading(false);
-  }, [authenticated, ethereumAddress, solanaAddress]);
-
-  useEffect(() => {
-    if (!authenticated) {
-      setBalances({ ethereum: 0, base: 0, solana: 0 });
-      setLastUpdated(null);
-      return;
-    }
-
-    void loadPrices();
-    void loadBalances();
-
-    const priceTimer = window.setInterval(() => {
-      void loadPrices();
-    }, 60000);
-
-    const balanceTimer = window.setInterval(() => {
-      void loadBalances();
-    }, 45000);
-
-    return () => {
-      window.clearInterval(priceTimer);
-      window.clearInterval(balanceTimer);
-    };
-  }, [authenticated, loadPrices, loadBalances]);
-
-  const totalValue =
-    balances.ethereum * prices.ethereum +
-    balances.base * prices.ethereum +
-    balances.solana * prices.solana;
-
-  const requestSwapQuote = async () => {
-    setSwapError('');
-    setSwapQuote(null);
-
-    if (!authenticated) {
-      setSwapError('Connect your wallet before requesting a quote.');
-      return;
-    }
-
-    const amount = swapAmount.trim();
-    if (!amount || !/^\\d+(\\.\\d+)?$/.test(amount) || Number(amount) <= 0) {
-      setSwapError('Enter a valid amount greater than zero.');
-      return;
-    }
-
-    if (swapFromChain === swapToChain) {
-      setSwapError('Choose two different networks for a cross-network swap.');
-      return;
-    }
-
-    const fromAddress = swapFromChain === '1151111081099710' ? solanaAddress : ethereumAddress;
-    const toAddress = swapToChain === '1151111081099710' ? solanaAddress : ethereumAddress;
-    if (!fromAddress || !toAddress) {
-      setSwapError('The wallet address for the selected network is not available.');
-      return;
-    }
-
-    const decimals = swapFromChain === '1151111081099710' ? 9 : 18;
-    const [whole, fraction = ''] = amount.split('.');
-    if (fraction.length > decimals) {
-      setSwapError(`This asset supports up to ${decimals} decimal places.`);
-      return;
-    }
-
-    const fromAmount = (BigInt(whole) * (10n ** BigInt(decimals)) +
-      BigInt((fraction + '0'.repeat(decimals)).slice(0, decimals))).toString();
-
-    const params = new URLSearchParams({
-      fromChain: swapFromChain,
-      toChain: swapToChain,
-      fromToken: LIFI_NATIVE_TOKENS[swapFromChain],
-      toToken: LIFI_NATIVE_TOKENS[swapToChain],
-      fromAmount,
-      fromAddress,
-      toAddress,
-    });
-
-    setSwapLoading(true);
-    try {
-      const response = await fetch(`/api/lifi/quote?${params.toString()}`);
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error || 'A swap quote could not be retrieved.');
-      }
-      setSwapQuote(data as LifiQuote);
-    } catch (err) {
-      setSwapError(err instanceof Error ? err.message : 'A swap quote could not be retrieved.');
-    } finally {
-      setSwapLoading(false);
-    }
-  };
-
-  const handleCopy = async (address: string) => {
-    if (!address) return;
-
-    try {
-      await navigator.clipboard.writeText(address);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setError('Unable to copy address on this device.');
-    }
-  };
-
-  const handleNavigation = (id: AppSection) => {
-    setSection(id);
-    setSidebarOpen(false);
-  };
-
-  const maskedValue = (value: string) => (hidden ? '••••••••' : value);
-
-  const renderOverview = () => (
-    <>
-      <div className="welcome-row">
-        <div>
-          <p className="eyebrow">WALLET OVERVIEW</p>
-          <h1>Your assets, <span>in control.</span></h1>
-          <p className="page-subtitle">
-            Your multi-chain wallet at a glance.
-          </p>
-        </div>
-        <button
-          className="welcome-date"
-          onClick={() => {
-            void loadBalances();
-            void loadPrices();
-          }}
-          disabled={loading}
-        >
-          <RefreshCw size={13} />
-          {loading ? 'Refreshing' : 'Refresh'}
-        </button>
-      </div>
-
-      <section className="hero-card">
-        <div className="hero-glow" />
-        <div className="hero-content">
-          <div className="hero-label">
-            <span className="hero-label-dot" />
-            YALO MULTI-CHAIN WALLET
-          </div>
-          <h2>One wallet. Three networks.</h2>
-          <p>
-            Manage your Ethereum, Base and Solana assets from one wallet
-            interface.
-          </p>
-          {!authenticated ? (
-            <button className="button button-light" onClick={login}>
-              <Wallet size={15} />
-              Connect wallet
-            </button>
-          ) : (
-            <button
-              className="button button-light"
-              onClick={() => setSection('portfolio')}
-            >
-              View portfolio
-              <ArrowUpRight size={15} />
-            </button>
-          )}
-          <div className="hero-networks">
-            <span><i className="network-ethereum" /> Ethereum</span>
-            <span><i className="network-base" /> Base</span>
-            <span><i className="network-solana" /> Solana</span>
-          </div>
-        </div>
-        <div className="hero-art" aria-hidden="true">
-          <div className="orbit orbit-one" />
-          <div className="orbit orbit-two" />
-          <div className="orbit-core">Y</div>
-          <span className="orbit-chip chip-one">ETH</span>
-          <span className="orbit-chip chip-two">SOL</span>
-          <span className="orbit-chip chip-three">BASE</span>
-        </div>
-      </section>
-
-      <div className="section-heading">
-        <div>
-          <h2>Portfolio snapshot</h2>
-          <p>Native assets across connected networks</p>
-        </div>
-        <button
-          className="icon-button"
-          aria-label="Hide or show balance"
-          onClick={() => setHidden((value) => !value)}
-        >
-          {hidden ? <EyeOff size={16} /> : <Eye size={16} />}
-        </button>
-      </div>
-
-      <div className="snapshot-grid">
-        <div className="snapshot-card total-card">
-          <div className="card-topline">
-            <span>Total portfolio value</span>
-            <Wallet size={15} />
-          </div>
-          <div className="metric-value">
-            {authenticated ? maskedValue(formatUSD(totalValue)) : '—'}
-          </div>
-          <div className="metric-footnote">
-            {authenticated
-              ? 'ETH and SOL native balances'
-              : 'Connect your wallet to view your assets'}
-          </div>
-        </div>
-
-        <div className="snapshot-card">
-          <div className="card-topline">
-            <span>Ethereum</span>
-            <span className="network-ethereum" />
-          </div>
-          <div className="metric-value">
-            {authenticated
-              ? maskedValue(`${formatToken(balances.ethereum)} ETH`)
-              : '—'}
-          </div>
-          <div className="metric-footnote">
-            {prices.ethereum
-              ? formatUSD(balances.ethereum * prices.ethereum)
-              : 'Price unavailable'}
-          </div>
-        </div>
-
-        <div className="snapshot-card">
-          <div className="card-topline">
-            <span>Base</span>
-            <span className="network-base" />
-          </div>
-          <div className="metric-value">
-            {authenticated
-              ? maskedValue(`${formatToken(balances.base)} ETH`)
-              : '—'}
-          </div>
-          <div className="metric-footnote">
-            {prices.ethereum
-              ? formatUSD(balances.base * prices.ethereum)
-              : 'Price unavailable'}
-          </div>
-        </div>
-
-        <div className="snapshot-card">
-          <div className="card-topline">
-            <span>Solana</span>
-            <span className="network-solana" />
-          </div>
-          <div className="metric-value">
-            {authenticated
-              ? maskedValue(`${formatToken(balances.solana)} SOL`)
-              : '—'}
-          </div>
-          <div className="metric-footnote">
-            {prices.solana
-              ? formatUSD(balances.solana * prices.solana)
-              : 'Price unavailable'}
-          </div>
-        </div>
-      </div>
-
-      {error && (
-        <p
-          role="alert"
-          className="metric-footnote"
-          style={{ color: '#e6a18e', marginTop: 12 }}
-        >
-          {error}
-        </p>
-      )}
-
-      <div className="lower-grid">
-        <section className="panel-card">
-          <div className="panel-heading">
-            <div>
-              <h3>Connected networks</h3>
-              <p>Native wallet balances</p>
-            </div>
-            <div className="panel-icon"><ShieldCheck size={16} /></div>
-          </div>
-
-          <div className="network-row">
-            <span className="network-logo ethereum-logo">◆</span>
-            <div>
-              <strong>Ethereum</strong>
-              <small>{authenticated ? `${formatToken(balances.ethereum)} ETH` : 'Wallet not connected'}</small>
-            </div>
-            <span className="network-state">
-              {ethereumAddress ? 'Connected' : 'Not connected'}
-            </span>
-          </div>
-
-          <div className="network-row">
-            <span className="network-logo base-logo">◉</span>
-            <div>
-              <strong>Base</strong>
-              <small>{authenticated ? `${formatToken(balances.base)} ETH` : 'Wallet not connected'}</small>
-            </div>
-            <span className="network-state">
-              {ethereumAddress ? 'Connected' : 'Not connected'}
-            </span>
-          </div>
-
-          <div className="network-row">
-            <span className="network-logo solana-logo">◎</span>
-            <div>
-              <strong>Solana</strong>
-              <small>{authenticated ? `${formatToken(balances.solana)} SOL` : 'Wallet not connected'}</small>
-            </div>
-            <span className="network-state">
-              {solanaAddress ? 'Connected' : 'Not connected'}
-            </span>
-          </div>
-        </section>
-
-        <section className="panel-card">
-          <div className="panel-heading">
-            <div>
-              <h3>Wallet addresses</h3>
-              <p>Your connected wallet accounts</p>
-            </div>
-            <div className="panel-icon"><Wallet size={16} /></div>
-          </div>
-
-          {!authenticated ? (
-            <div className="empty-state">
-              <div className="empty-icon"><Wallet size={18} /></div>
-              <strong>No wallet connected</strong>
-              <p>Connect your wallet to see your addresses.</p>
-            </div>
-          ) : (
-            <>
-              {ethereumAddress && (
-                <div className="network-row">
-                  <div>
-                    <strong>Ethereum / Base</strong>
-                    <small>{shortenAddress(ethereumAddress)}</small>
-                  </div>
-                  <button
-                    className="icon-button"
-                    aria-label="Copy EVM address"
-                    onClick={() => void handleCopy(ethereumAddress)}
-                  >
-                    <Copy size={14} />
-                  </button>
-                </div>
-              )}
-
-              {solanaAddress && (
-                <div className="network-row">
-                  <div>
-                    <strong>Solana</strong>
-                    <small>{shortenAddress(solanaAddress)}</small>
-                  </div>
-                  <button
-                    className="icon-button"
-                    aria-label="Copy Solana address"
-                    onClick={() => void handleCopy(solanaAddress)}
-                  >
-                    <Copy size={14} />
-                  </button>
-                </div>
-              )}
-
-              {!ethereumAddress && !solanaAddress && (
-                <div className="empty-state">
-                  <strong>No wallet addresses found</strong>
-                  <p>Check your Privy wallet account setup.</p>
-                </div>
-              )}
-            </>
-          )}
-
-          {copied && (
-            <p className="metric-footnote" style={{ color: '#78c6a4' }}>
-              <Check size={12} /> Address copied
-            </p>
-          )}
-        </section>
-      </div>
-
-      <div className="integration-note">
-        <div className="integration-note-icon"><Clock3 size={18} /></div>
-        <div>
-          <strong>Last balance update</strong>
-          <p>{lastUpdated ? lastUpdated.toLocaleTimeString() : 'Waiting for wallet data'}</p>
-        </div>
-        <span className={`integration-status ${authenticated ? 'configured' : ''}`}>
-          {authenticated ? 'Wallet connected' : 'Not connected'}
-        </span>
-      </div>
-    </>
-  );
-
-  const renderMarkets = () => (
-    <>
-      <div className="welcome-row">
-        <div>
-          <p className="eyebrow">MARKET DATA</p>
-          <h1>Market <span>prices.</span></h1>
-          <p className="page-subtitle">Live reference prices for supported native assets.</p>
-        </div>
-        <button className="icon-button" onClick={() => void loadPrices()} aria-label="Refresh prices">
-          <RefreshCw size={16} />
-        </button>
-      </div>
-      <div className="snapshot-grid">
-        <div className="snapshot-card">
-          <div className="card-topline">Ethereum <span className="network-ethereum" /></div>
-          <div className="metric-value">{prices.ethereum ? formatUSD(prices.ethereum) : '—'}</div>
-          <div className="metric-footnote">ETH / USD</div>
-        </div>
-        <div className="snapshot-card">
-          <div className="card-topline">Solana <span className="network-solana" /></div>
-          <div className="metric-value">{prices.solana ? formatUSD(prices.solana) : '—'}</div>
-          <div className="metric-footnote">SOL / USD</div>
-        </div>
-      </div>
-      <div className="integration-note">
-        <LineChart size={18} />
-        <div>
-          <strong>Market data</strong>
-          <p>Prices are retrieved from CoinGecko. Historical charts and additional assets are not yet connected.</p>
-        </div>
-      </div>
-    </>
-  );
-
-  const renderPortfolio = () => (
-    <>
-      <div className="welcome-row">
-        <div>
-          <p className="eyebrow">YOUR ASSETS</p>
-          <h1>My <span>portfolio.</span></h1>
-          <p className="page-subtitle">Native ETH and SOL balances across your connected networks.</p>
-        </div>
-        <button className="icon-button" onClick={() => void loadBalances()} disabled={loading} aria-label="Refresh balances">
-          <RefreshCw size={16} />
-        </button>
-      </div>
-      <div className="snapshot-grid">
-        <div className="snapshot-card total-card">
-          <div className="card-topline">Total value <Wallet size={15} /></div>
-          <div className="metric-value">{authenticated ? formatUSD(totalValue) : '—'}</div>
-          <div className="metric-footnote">Native assets only</div>
-        </div>
-        <div className="snapshot-card">
-          <div className="card-topline">Ethereum</div>
-          <div className="metric-value">{authenticated ? `${formatToken(balances.ethereum)} ETH` : '—'}</div>
-          <div className="metric-footnote">{formatUSD(balances.ethereum * prices.ethereum)}</div>
-        </div>
-        <div className="snapshot-card">
-          <div className="card-topline">Base</div>
-          <div className="metric-value">{authenticated ? `${formatToken(balances.base)} ETH` : '—'}</div>
-          <div className="metric-footnote">{formatUSD(balances.base * prices.ethereum)}</div>
-        </div>
-        <div className="snapshot-card">
-          <div className="card-topline">Solana</div>
-          <div className="metric-value">{authenticated ? `${formatToken(balances.solana)} SOL` : '—'}</div>
-          <div className="metric-footnote">{formatUSD(balances.solana * prices.solana)}</div>
-        </div>
-      </div>
-      <div className="integration-note">
-        <Wallet size={18} />
-        <div>
-          <strong>Native asset balances</strong>
-          <p>ERC-20 and SPL token discovery has not yet been implemented.</p>
-        </div>
-      </div>
-    </>
-  );
-
-  const renderComingSoon = (title: string, description: string) => (
-    <div className="coming-page">
-      <div className="coming-icon"><Sparkles size={25} /></div>
-      <p className="eyebrow">YALO WALLET</p>
-      <h1>{title}</h1>
-      <p>{description}</p>
-      <span className="coming-badge">COMING SOON</span>
-    </div>
-  );
-
-  const renderContent = () => {
-    switch (section) {
-      case 'overview':
-        return renderOverview();
-      case 'markets':
-        return renderMarkets();
-      case 'portfolio':
-        return renderPortfolio();
-      case 'swap':
-        return (
-          <>
-            <div className="welcome-row">
-              <div>
-                <p className="eyebrow">YALO SWAP</p>
-                <h1>Move assets <span>across networks.</span></h1>
-                <p className="page-subtitle">Get a live quote for native ETH and SOL across Ethereum, Base and Solana.</p>
-              </div>
-            </div>
-            <section className="panel-card" style={{ maxWidth: 680 }}>
-              <div className="panel-heading">
-                <div>
-                  <h3>Swap quote</h3>
-                  <p>Review the estimated output before any transaction is approved.</p>
-                </div>
-                <div className="panel-icon"><ArrowLeftRight size={16} /></div>
-              </div>
-
-              <label style={{ display: 'block', marginBottom: 8, color: '#aeb8c9', fontSize: 13 }}>From network</label>
-              <select
-                value={swapFromChain}
-                onChange={(event) => { setSwapFromChain(event.target.value); setSwapQuote(null); setSwapError(''); }}
-                style={{ width: '100%', padding: 13, marginBottom: 16, borderRadius: 10, color: '#edf1f8', background: '#111827', border: '1px solid #30394a' }}
-              >
-                {LIFI_CHAINS.map((chain) => <option key={chain.id} value={chain.id}>{chain.label} · {chain.symbol}</option>)}
-              </select>
-
-              <label style={{ display: 'block', marginBottom: 8, color: '#aeb8c9', fontSize: 13 }}>Amount</label>
-              <input
-                inputMode="decimal"
-                value={swapAmount}
-                onChange={(event) => { setSwapAmount(event.target.value); setSwapQuote(null); }}
-                placeholder="0.00"
-                style={{ width: '100%', boxSizing: 'border-box', padding: 14, marginBottom: 16, borderRadius: 10, color: '#edf1f8', background: '#111827', border: '1px solid #30394a' }}
-              />
-
-              <label style={{ display: 'block', marginBottom: 8, color: '#aeb8c9', fontSize: 13 }}>To network</label>
-              <select
-                value={swapToChain}
-                onChange={(event) => { setSwapToChain(event.target.value); setSwapQuote(null); setSwapError(''); }}
-                style={{ width: '100%', padding: 13, marginBottom: 18, borderRadius: 10, color: '#edf1f8', background: '#111827', border: '1px solid #30394a' }}
-              >
-                {LIFI_CHAINS.map((chain) => <option key={chain.id} value={chain.id}>{chain.label} · {chain.symbol}</option>)}
-              </select>
-
-              <button className="button button-primary" onClick={() => void requestSwapQuote()} disabled={swapLoading || !authenticated}>
-                <ArrowLeftRight size={15} />
-                {swapLoading ? 'Getting quote…' : 'Get swap quote'}
-              </button>
-
-              {!authenticated && <p className="metric-footnote" style={{ marginTop: 12 }}>Connect your wallet to request a quote.</p>}
-              {swapError && <p role="alert" className="metric-footnote" style={{ color: '#e6a18e', marginTop: 14 }}>{swapError}</p>}
-
-              {swapQuote && (
-                <div className="snapshot-card" style={{ marginTop: 18 }}>
-                  <div className="card-topline"><span>Estimated output</span><span>{swapQuote.tool || 'LI.FI route'}</span></div>
-                  <div className="metric-value">
-                    {formatQuoteAmount(swapQuote.estimate?.toAmount, swapToChain)} {LIFI_CHAINS.find((chain) => chain.id === swapToChain)?.symbol}
-                  </div>
-                  <div className="metric-footnote">
-                    Minimum received: {formatQuoteAmount(swapQuote.estimate?.toAmountMin, swapToChain)} {LIFI_CHAINS.find((chain) => chain.id === swapToChain)?.symbol}
-                  </div>
-                  {typeof swapQuote.estimate?.executionDuration === 'number' && (
-                    <div className="metric-footnote" style={{ marginTop: 8 }}>
-                      Estimated time: {Math.max(1, Math.round(swapQuote.estimate.executionDuration / 60))} min
-                    </div>
-                  )}
-                </div>
-              )}
-              <p className="metric-footnote" style={{ marginTop: 16 }}>
-                Quote retrieval is connected. Transaction approval and swap execution are not enabled yet.
-              </p>
-            </section>
-          </>
-        );
-      case 'activity':
-        return renderComingSoon('Transaction activity', 'On-chain transaction history is not connected yet.');
-      case 'watchlist':
-        return renderComingSoon('Watchlist', 'Token watchlist functionality is not implemented yet.');
-      case 'settings':
-        return (
-          <>
-            <div className="welcome-row">
-              <div>
-                <p className="eyebrow">PREFERENCES</p>
-                <h1>Wallet <span>settings.</span></h1>
-                <p className="page-subtitle">Your account and connected addresses.</p>
-              </div>
-            </div>
-            <section className="panel-card">
-              <div className="panel-heading">
-                <div>
-                  <h3>Account</h3>
-                  <p>Privy authentication</p>
-                </div>
-                <ShieldCheck size={18} />
-              </div>
-              <div className="network-row">
-                <div>
-                  <strong>Status</strong>
-                  <small>{authenticated ? 'Authenticated' : 'Not connected'}</small>
-                </div>
-              </div>
-              {ethereumAddress && (
-                <div className="network-row">
-                  <div>
-                    <strong>Ethereum / Base</strong>
-                    <small>{ethereumAddress}</small>
-                  </div>
-                  <button className="icon-button" onClick={() => void handleCopy(ethereumAddress)} aria-label="Copy EVM address">
-                    <Copy size={14} />
-                  </button>
-                </div>
-              )}
-              {solanaAddress && (
-                <div className="network-row">
-                  <div>
-                    <strong>Solana</strong>
-                    <small>{solanaAddress}</small>
-                  </div>
-                  <button className="icon-button" onClick={() => void handleCopy(solanaAddress)} aria-label="Copy Solana address">
-                    <Copy size={14} />
-                  </button>
-                </div>
-              )}
-              {authenticated && (
-                <button className="button button-primary" onClick={() => void logout()}>
-                  <LogOut size={15} />
-                  Disconnect wallet
-                </button>
-              )}
-            </section>
-          </>
-        );
-      default:
-        return renderOverview();
-    }
-  };
-
-  if (!ready) {
-    return (
-      <main className="config-screen">
-        <div className="brand-mark">Y</div>
-        <p className="eyebrow">YALO WALLET</p>
-        <h1>Loading wallet</h1>
-      </main>
-    );
+      const response = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`);
+      if (!response.ok) throw new Error('Token search is temporarily unavailable.');
+      const data = await response.json() as { pairs?: Pair[] };
+      const matches = (data.pairs ?? []).filter(p => p.chainId === 'solana').sort((a,b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
+      const found = matches.find(p => p.baseToken.address.toLowerCase() === query.toLowerCase()) ?? matches[0];
+      if (!found) throw new Error('No Solana market found for this search.');
+      setPair(found); setMintInput(found.baseToken.address); setTokenName(found.baseToken.name); setTokenSymbol(found.baseToken.symbol);
+      const mint = await getMint(rpc, new PublicKey(found.baseToken.address)); setTokenDecimals(mint.decimals);
+      setTab('trade');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not find token.'); }
+    finally { setSearching(false); }
   }
 
-  return (
-    <div className="app-shell">
-      {sidebarOpen && (
-        <button
-          className="mobile-scrim"
-          aria-label="Close navigation"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+  async function getQuote() {
+    if (!address) { await login(); return; }
+    if (!pair) { setError('Search and select a Solana token first.'); return; }
+    setBusy(true); setError(''); setMessage(''); setQuote(null);
+    try {
+      const fromToken = mode === 'buy' ? SOL : pair.baseToken.address;
+      const toToken = mode === 'buy' ? pair.baseToken.address : SOL;
+      const decimals = mode === 'buy' ? 9 : tokenDecimals;
+      const body = { fromChain: SOLANA_CHAIN, toChain: SOLANA_CHAIN, fromToken, toToken, fromAmount: rawAmount(amount, decimals), fromAddress: address, slippage: '0.5' };
+      const response = await fetch('/api/lifi/quote', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message ?? data.error ?? 'Could not get a live quote.');
+      if (!data.transactionRequest?.data) throw new Error('The provider did not return an executable Solana transaction for this token.');
+      setQuote(data as Quote);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Quote request failed.'); }
+    finally { setBusy(false); }
+  }
 
-      <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
-        <div className="brand">
-          <div className="brand-mark">Y</div>
-          <div>
-            <div className="brand-name">YALO</div>
-            <div className="brand-caption">WALLET</div>
+  async function executeTrade() {
+    if (!wallet || !quote?.transactionRequest?.data) return;
+    setBusy(true); setError(''); setMessage('Waiting for wallet approval…');
+    try {
+      const bytes = Uint8Array.from(atob(quote.transactionRequest.data), c => c.charCodeAt(0));
+      const transaction = VersionedTransaction.deserialize(bytes);
+      const result = await signAndSendTransaction({ transaction: transaction.serialize(), wallet, chain: 'solana:mainnet' });
+      const sig = result.signature;
+      setMessage('Transaction sent. Waiting for Solana confirmation…');
+      await rpc.confirmTransaction(sig, 'confirmed');
+      setHistory(prev => [{ sig, side: mode.toUpperCase(), token: tokenSymbol, time: new Date().toLocaleString() }, ...prev]);
+      setMessage('Trade confirmed on Solana.'); setQuote(null);
+      const lamports = await rpc.getBalance(new PublicKey(address)); setBalance(lamports / LAMPORTS_PER_SOL);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Transaction was not completed.'); setMessage(''); }
+    finally { setBusy(false); }
+  }
+
+  async function copyAddress() { if (!address) return; await navigator.clipboard.writeText(address); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }
+  if (!ready || !walletsReady) return <div className="loading-screen"><div className="brand-mark">Y</div><p>Preparing YALO Wallet…</p></div>;
+
+  return <div className="shell">
+    <aside className={`sidebar ${mobileMenu ? 'open' : ''}`}>
+      <div className="brand"><div className="brand-mark">Y</div><div><b>YALO</b><small>WALLET</small></div><button className="mobile-close" onClick={()=>setMobileMenu(false)}><X/></button></div>
+      <div className="nav-caption">WORKSPACE</div>
+      <button className={`nav-link ${tab==='trade'?'active':''}`} onClick={()=>{setTab('trade');setMobileMenu(false)}}><ArrowLeftRight/> Trade</button>
+      <button className={`nav-link ${tab==='markets'?'active':''}`} onClick={()=>{setTab('markets');setMobileMenu(false)}}><BarChart3/> Markets</button>
+      <button className={`nav-link ${tab==='receive'?'active':''}`} onClick={()=>{setTab('receive');setMobileMenu(false)}}><QrCode/> Receive</button>
+      <button className={`nav-link ${tab==='activity'?'active':''}`} onClick={()=>{setTab('activity');setMobileMenu(false)}}><Activity/> Activity</button>
+      <div className="sidebar-bottom"><div className="security"><ShieldCheck/><div><b>Self-custody</b><small>Transactions require your approval.</small></div></div><div className="sidebar-foot"><i/> Solana Mainnet <span>LIVE</span></div></div>
+    </aside>
+    {mobileMenu && <button className="scrim" onClick={()=>setMobileMenu(false)} aria-label="Close menu"/>}
+    <main className="main">
+      <header className="topbar"><div className="crumb"><button className="menu-button" onClick={()=>setMobileMenu(true)}><Menu/></button><span>YALO</span><b>/ {tab.toUpperCase()}</b></div><div className="top-actions"><div className="network-tag"><i/> Solana Mainnet</div>{authenticated ? <><div className="balance-tag">{balance === null ? '—' : `${balance.toFixed(4)} SOL`}</div><button className="wallet-button" onClick={()=>void logout()}><span className="avatar">Y</span>{short(address)}<LogOut size={14}/></button></> : <button className="primary" onClick={()=>void login()}><Wallet size={16}/> Connect wallet</button>}</div></header>
+      <div className="content">
+        {tab==='trade' && <>
+          <div className="page-heading"><div><p className="eyebrow">SOLANA DECENTRALIZED TRADING</p><h1>Trade <em>tokens.</em></h1><p>Buy and sell Solana tokens directly from your connected wallet.</p></div><span className="live-pill"><i/> LIVE NETWORK</span></div>
+          <div className="trade-layout">
+            <section className="panel trade-panel"><div className="panel-title"><div><h2>Swap tokens</h2><p>Live route · wallet-signed transaction</p></div><span className="gold-icon"><Zap/></span></div>
+              <div className="mode-switch"><button className={mode==='buy'?'selected':''} onClick={()=>{setMode('buy');setQuote(null);setError('')}}>Buy</button><button className={mode==='sell'?'selected':''} onClick={()=>{setMode('sell');setQuote(null);setError('')}}>Sell</button></div>
+              <label className="field-label">TOKEN TO {mode==='buy'?'BUY':'SELL'}</label><div className="search-line"><input value={mintInput} onChange={e=>setMintInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void searchToken()}} placeholder="Token name, symbol or mint address"/><button className="search-button" onClick={()=>void searchToken()} disabled={searching}>{searching?<RefreshCw className="spin"/>:<Search/>}</button></div>
+              {pair && <div className="token-found"><div className="token-avatar">{tokenSymbol.slice(0,1)}</div><div className="token-info"><b>{tokenName} <span>{tokenSymbol}</span></b><small>{short(pair.baseToken.address)}</small></div><button className="copy-small" onClick={()=>void navigator.clipboard.writeText(pair.baseToken.address)}><Copy size={14}/></button></div>}
+              <label className="field-label amount-label">{mode==='buy'?'YOU PAY':'TOKEN AMOUNT'}</label><div className="amount-box"><input type="number" min="0" step="any" value={amount} onChange={e=>{setAmount(e.target.value);setQuote(null)}}/><span className="asset-chip"><i className={mode==='buy'?'sol-dot':'token-dot'}/>{mode==='buy'?'SOL':tokenSymbol}<ChevronDown size={14}/></span></div>
+              <div className="balance-line"><span>Network</span><b>Solana Mainnet</b></div><div className="balance-line"><span>Slippage tolerance</span><b>0.50%</b></div>
+              {quote && <div className="quote-box"><div className="quote-title"><CheckCircle2/> Live quote received</div><div className="quote-row"><span>Estimated receive</span><b>{quote.estimate?.toAmount ? `${(Number(quote.estimate.toAmount)/10**(mode==='buy'?tokenDecimals:9)).toLocaleString('en-US',{maximumFractionDigits:6})} ${mode==='buy'?tokenSymbol:'SOL'}` : 'See quote details'}</b></div><div className="quote-row"><span>Minimum received</span><b>{quote.estimate?.toAmountMin ? (Number(quote.estimate.toAmountMin)/10**(mode==='buy'?tokenDecimals:9)).toLocaleString('en-US',{maximumFractionDigits:6}) : '—'}</b></div><div className="quote-row"><span>Route</span><b>{quote.toolDetails?.name ?? 'LI.FI route'}</b></div></div>}
+              {error && <div className="error-box">{error}</div>}{message && <div className="message-box">{message}</div>}
+              {!quote ? <button className="primary trade-action" disabled={busy||searching} onClick={()=>void getQuote()}>{busy?<><RefreshCw className="spin"/> Getting live quote…</>:<>Get live quote <ArrowDownUp/></>}</button> : <button className="primary trade-action" disabled={busy} onClick={()=>void executeTrade()}>{busy?<><RefreshCw className="spin"/> Processing…</>:<>Confirm & sign trade <ShieldCheck/></>}</button>}
+              <p className="fine-print">Review the quote before signing. Network fees apply. Trades are final once confirmed on-chain.</p>
+            </section>
+            <section className="panel market-panel"><div className="panel-title"><div><h2>Token market</h2><p>Live Solana market data</p></div><BarChart3 className="muted-icon"/></div>
+              {pair ? <><div className="market-summary"><div><small>{pair.baseToken.name} / {pair.quoteToken.symbol}</small><h3>{money(Number(pair.priceUsd))}</h3></div><span className="live-pill"><i/> LIVE</span></div><div className="market-stats"><div><small>Liquidity</small><b>{money(pair.liquidity?.usd)}</b></div><div><small>24h volume</small><b>{money(pair.volume?.h24)}</b></div><div><small>Market cap</small><b>{money(pair.marketCap ?? pair.fdv)}</b></div></div><div className="chart-frame"><iframe title="DexScreener chart" src={`https://dexscreener.com/solana/${chartPair}?embed=1&theme=dark&trades=0&info=0`} loading="lazy" allow="clipboard-write"/></div><a className="external-link" href={pair.url} target="_blank" rel="noreferrer">Open market on DexScreener <ExternalLink size={14}/></a></> : <div className="empty-market"><div className="chart-placeholder"><BarChart3/></div><b>Search a token to view its chart</b><p>Enter a Solana token name, symbol or mint address.</p></div>}
+            </section>
           </div>
-          <button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Close menu">
-            <X size={17} />
-          </button>
-        </div>
-
-        <div className="nav-label">MENU</div>
-        <nav className="nav-list">
-          {navigation.map((item) => {
-            const Icon = navIcons[item.id];
-            return (
-              <button
-                key={item.id}
-                className={`nav-item ${section === item.id ? 'nav-item-active' : ''}`}
-                onClick={() => handleNavigation(item.id)}
-              >
-                <Icon size={17} />
-                <span>{item.label}</span>
-                {section === item.id && <i className="active-indicator" />}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="sidebar-bottom">
-          <div className="security-card">
-            <div className="security-icon"><ShieldCheck size={19} /></div>
-            <div>
-              <strong>Wallet security</strong>
-              <p>Your wallet keys are managed by Privy.</p>
-            </div>
-          </div>
-          <div className="sidebar-footer">
-            <span className="status-dot" />
-            <span>{authenticated ? 'Wallet connected' : 'Wallet disconnected'}</span>
-            <span className="version">V3.0</span>
-          </div>
-        </div>
-      </aside>
-
-      <main className="main-area">
-        <header className="topbar">
-          <div className="breadcrumb">
-            <button className="icon-button mobile-menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
-              <Menu size={19} />
-            </button>
-            <span>YALO</span>
-            <span className="crumb-separator">/</span>
-            <strong>{navigation.find((item) => item.id === section)?.label}</strong>
-          </div>
-
-          <div className="topbar-actions">
-            <div className="network-pill">
-              <span className="status-dot" />
-              Ethereum · Base · Solana
-            </div>
-            <button className="icon-button" aria-label="Help">
-              <CircleHelp size={17} />
-            </button>
-            <div className="account-area">
-              <div className="account-avatar">
-                {authenticated ? 'Y' : <Wallet size={15} />}
-              </div>
-              <div className="account-meta">
-                <strong>{authenticated ? shortenAddress(ethereumAddress || solanaAddress) : 'Guest wallet'}</strong>
-                <span>{authenticated ? 'Connected' : 'Not connected'}</span>
-              </div>
-              {authenticated ? (
-                <button className="icon-button" onClick={() => void logout()} aria-label="Disconnect wallet">
-                  <LogOut size={15} />
-                </button>
-              ) : (
-                <button className="button button-primary" onClick={login}>
-                  Connect
-                </button>
-              )}
-            </div>
-          </div>
-        </header>
-
-        <div className="page-content">
-          {renderContent()}
-          <footer className="page-footer">
-            <span>© {new Date().getFullYear()} YALO Wallet</span>
-            <span><ShieldCheck size={12} /> Non-custodial wallet interface</span>
-          </footer>
-        </div>
-      </main>
-    </div>
-  );
+          <div className="notice"><ShieldCheck/><div><b>Trade safely</b><p>Token search is sourced from public market data. Always verify the mint address. A token must have available liquidity and a valid route to trade.</p></div></div>
+        </>}
+        {tab==='markets' && <><div className="page-heading"><div><p className="eyebrow">SOLANA ECOSYSTEM</p><h1>Explore <em>markets.</em></h1><p>Find a token by name, symbol or mint address.</p></div></div><div className="panel market-search-panel"><div className="search-line large"><input value={mintInput} onChange={e=>setMintInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void searchToken()}} placeholder="Search Solana tokens…"/><button className="search-button" onClick={()=>void searchToken()}><Search/></button></div>{pair && <div className="market-result"><div><b>{pair.baseToken.name} ({pair.baseToken.symbol})</b><small>{pair.baseToken.address}</small></div><strong>{money(Number(pair.priceUsd))}</strong><button className="primary" onClick={()=>setTab('trade')}>Trade token</button></div>}</div></>}
+        {tab==='receive' && <><div className="page-heading"><div><p className="eyebrow">YOUR WALLET</p><h1>Receive <em>SOL.</em></h1><p>Share your Solana address to receive SOL or SPL tokens.</p></div></div><section className="panel receive-panel"><div className="qr-wrap">{address?<QRCodeSVG value={address} size={210} bgColor="#ffffff" fgColor="#090d16" level="H" includeMargin/>:<div className="qr-empty"><QrCode/></div>}</div><h2>{address?short(address):'Connect your wallet'}</h2><p>{address?'Only send Solana network assets to this address.':'Connect your Privy wallet to display your receiving address.'}</p>{address&&<button className="primary" onClick={()=>void copyAddress()}><Copy size={16}/>{copied?'Copied':'Copy wallet address'}</button>}</section></>}
+        {tab==='activity' && <><div className="page-heading"><div><p className="eyebrow">ON-CHAIN RECORDS</p><h1>Trade <em>activity.</em></h1><p>Transactions confirmed during this browser session.</p></div></div><section className="panel activity-panel">{history.length?history.map(item=><div className="activity-row" key={item.sig}><div className="activity-icon"><ArrowLeftRight/></div><div><b>{item.side} {item.token}</b><small>{item.time}</small><a href={`https://solscan.io/tx/${item.sig}`} target="_blank" rel="noreferrer">{short(item.sig)} <ExternalLink size={12}/></a></div><span className="confirmed">Confirmed</span></div>):<div className="empty-market"><Activity/><b>No trades in this session yet</b><p>Completed trades will appear here.</p></div>}</section></>}
+        <footer className="footer"><span>© {new Date().getFullYear()} YALO Wallet</span><a href={explorer} target="_blank" rel="noreferrer">Solana Explorer <ExternalLink size={12}/></a><span>Powered by Privy · LI.FI · DexScreener</span></footer>
+      </div>
+    </main>
+  </div>;
 }
-
 export default App;
