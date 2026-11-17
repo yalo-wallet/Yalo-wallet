@@ -43,6 +43,47 @@ type Balances = {
   solana: number;
 };
 
+type LifiQuote = {
+  estimate?: {
+    toAmount?: string;
+    toAmountMin?: string;
+    executionDuration?: number;
+    feeCosts?: Array<{ amountUSD?: string; name?: string }>;
+    gasCosts?: Array<{ amountUSD?: string; amount?: string; token?: { symbol?: string } }>;
+  };
+  tool?: string;
+  action?: {
+    fromToken?: { symbol?: string };
+    toToken?: { symbol?: string };
+  };
+};
+
+const LIFI_NATIVE_TOKENS: Record<string, string> = {
+  '1': '0x0000000000000000000000000000000000000000',
+  '8453': '0x0000000000000000000000000000000000000000',
+  '1151111081099710': 'So11111111111111111111111111111111111111112',
+};
+
+const LIFI_CHAINS = [
+  { id: '1', label: 'Ethereum', symbol: 'ETH' },
+  { id: '8453', label: 'Base', symbol: 'ETH' },
+  { id: '1151111081099710', label: 'Solana', symbol: 'SOL' },
+];
+
+function formatQuoteAmount(raw?: string, chainId?: string) {
+  if (!raw || !/^\\d+$/.test(raw)) return '—';
+  const decimals = chainId === '1151111081099710' ? 9 : 18;
+  try {
+    const value = BigInt(raw);
+    const base = 10n ** BigInt(decimals);
+    const whole = value / base;
+    const fraction = (value % base).toString().padStart(decimals, '0').slice(0, 6);
+    return `${whole.toString()}${fraction === '000000' ? '' : `.${fraction.replace(/0+$/, '')}`}`;
+  } catch {
+    return '—';
+  }
+}
+
 const ethereumClient = createPublicClient({
   chain: mainnet,
   transport: http('https://ethereum-rpc.publicnode.com'),
@@ -104,6 +145,12 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [swapFromChain, setSwapFromChain] = useState('1');
+  const [swapToChain, setSwapToChain] = useState('8453');
+  const [swapAmount, setSwapAmount] = useState('');
+  const [swapQuote, setSwapQuote] = useState<LifiQuote | null>(null);
+  const [swapLoading, setSwapLoading] = useState(false);
+  const [swapError, setSwapError] = useState('');
 
   const [prices, setPrices] = useState<Prices>({
     ethereum: 0,
@@ -269,6 +316,68 @@ function App() {
     balances.ethereum * prices.ethereum +
     balances.base * prices.ethereum +
     balances.solana * prices.solana;
+
+  const requestSwapQuote = async () => {
+    setSwapError('');
+    setSwapQuote(null);
+
+    if (!authenticated) {
+      setSwapError('Connect your wallet before requesting a quote.');
+      return;
+    }
+
+    const amount = swapAmount.trim();
+    if (!amount || !/^\\d+(\\.\\d+)?$/.test(amount) || Number(amount) <= 0) {
+      setSwapError('Enter a valid amount greater than zero.');
+      return;
+    }
+
+    if (swapFromChain === swapToChain) {
+      setSwapError('Choose two different networks for a cross-network swap.');
+      return;
+    }
+
+    const fromAddress = swapFromChain === '1151111081099710' ? solanaAddress : ethereumAddress;
+    const toAddress = swapToChain === '1151111081099710' ? solanaAddress : ethereumAddress;
+    if (!fromAddress || !toAddress) {
+      setSwapError('The wallet address for the selected network is not available.');
+      return;
+    }
+
+    const decimals = swapFromChain === '1151111081099710' ? 9 : 18;
+    const [whole, fraction = ''] = amount.split('.');
+    if (fraction.length > decimals) {
+      setSwapError(`This asset supports up to ${decimals} decimal places.`);
+      return;
+    }
+
+    const fromAmount = (BigInt(whole) * (10n ** BigInt(decimals)) +
+      BigInt((fraction + '0'.repeat(decimals)).slice(0, decimals))).toString();
+
+    const params = new URLSearchParams({
+      fromChain: swapFromChain,
+      toChain: swapToChain,
+      fromToken: LIFI_NATIVE_TOKENS[swapFromChain],
+      toToken: LIFI_NATIVE_TOKENS[swapToChain],
+      fromAmount,
+      fromAddress,
+      toAddress,
+    });
+
+    setSwapLoading(true);
+    try {
+      const response = await fetch(`/api/lifi/quote?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || 'A swap quote could not be retrieved.');
+      }
+      setSwapQuote(data as LifiQuote);
+    } catch (err) {
+      setSwapError(err instanceof Error ? err.message : 'A swap quote could not be retrieved.');
+    } finally {
+      setSwapLoading(false);
+    }
+  };
 
   const handleCopy = async (address: string) => {
     if (!address) return;
@@ -666,7 +775,81 @@ function App() {
       case 'portfolio':
         return renderPortfolio();
       case 'swap':
-        return renderComingSoon('Cross-chain swap', 'Swap execution through Li.FI is not connected yet.');
+        return (
+          <>
+            <div className="welcome-row">
+              <div>
+                <p className="eyebrow">YALO SWAP</p>
+                <h1>Move assets <span>across networks.</span></h1>
+                <p className="page-subtitle">Get a live quote for native ETH and SOL across Ethereum, Base and Solana.</p>
+              </div>
+            </div>
+            <section className="panel-card" style={{ maxWidth: 680 }}>
+              <div className="panel-heading">
+                <div>
+                  <h3>Swap quote</h3>
+                  <p>Review the estimated output before any transaction is approved.</p>
+                </div>
+                <div className="panel-icon"><ArrowLeftRight size={16} /></div>
+              </div>
+
+              <label style={{ display: 'block', marginBottom: 8, color: '#aeb8c9', fontSize: 13 }}>From network</label>
+              <select
+                value={swapFromChain}
+                onChange={(event) => { setSwapFromChain(event.target.value); setSwapQuote(null); setSwapError(''); }}
+                style={{ width: '100%', padding: 13, marginBottom: 16, borderRadius: 10, color: '#edf1f8', background: '#111827', border: '1px solid #30394a' }}
+              >
+                {LIFI_CHAINS.map((chain) => <option key={chain.id} value={chain.id}>{chain.label} · {chain.symbol}</option>)}
+              </select>
+
+              <label style={{ display: 'block', marginBottom: 8, color: '#aeb8c9', fontSize: 13 }}>Amount</label>
+              <input
+                inputMode="decimal"
+                value={swapAmount}
+                onChange={(event) => { setSwapAmount(event.target.value); setSwapQuote(null); }}
+                placeholder="0.00"
+                style={{ width: '100%', boxSizing: 'border-box', padding: 14, marginBottom: 16, borderRadius: 10, color: '#edf1f8', background: '#111827', border: '1px solid #30394a' }}
+              />
+
+              <label style={{ display: 'block', marginBottom: 8, color: '#aeb8c9', fontSize: 13 }}>To network</label>
+              <select
+                value={swapToChain}
+                onChange={(event) => { setSwapToChain(event.target.value); setSwapQuote(null); setSwapError(''); }}
+                style={{ width: '100%', padding: 13, marginBottom: 18, borderRadius: 10, color: '#edf1f8', background: '#111827', border: '1px solid #30394a' }}
+              >
+                {LIFI_CHAINS.map((chain) => <option key={chain.id} value={chain.id}>{chain.label} · {chain.symbol}</option>)}
+              </select>
+
+              <button className="button button-primary" onClick={() => void requestSwapQuote()} disabled={swapLoading || !authenticated}>
+                <ArrowLeftRight size={15} />
+                {swapLoading ? 'Getting quote…' : 'Get swap quote'}
+              </button>
+
+              {!authenticated && <p className="metric-footnote" style={{ marginTop: 12 }}>Connect your wallet to request a quote.</p>}
+              {swapError && <p role="alert" className="metric-footnote" style={{ color: '#e6a18e', marginTop: 14 }}>{swapError}</p>}
+
+              {swapQuote && (
+                <div className="snapshot-card" style={{ marginTop: 18 }}>
+                  <div className="card-topline"><span>Estimated output</span><span>{swapQuote.tool || 'LI.FI route'}</span></div>
+                  <div className="metric-value">
+                    {formatQuoteAmount(swapQuote.estimate?.toAmount, swapToChain)} {LIFI_CHAINS.find((chain) => chain.id === swapToChain)?.symbol}
+                  </div>
+                  <div className="metric-footnote">
+                    Minimum received: {formatQuoteAmount(swapQuote.estimate?.toAmountMin, swapToChain)} {LIFI_CHAINS.find((chain) => chain.id === swapToChain)?.symbol}
+                  </div>
+                  {typeof swapQuote.estimate?.executionDuration === 'number' && (
+                    <div className="metric-footnote" style={{ marginTop: 8 }}>
+                      Estimated time: {Math.max(1, Math.round(swapQuote.estimate.executionDuration / 60))} min
+                    </div>
+                  )}
+                </div>
+              )}
+              <p className="metric-footnote" style={{ marginTop: 16 }}>
+                Quote retrieval is connected. Transaction approval and swap execution are not enabled yet.
+              </p>
+            </section>
+          </>
+        );
       case 'activity':
         return renderComingSoon('Transaction activity', 'On-chain transaction history is not connected yet.');
       case 'watchlist':
