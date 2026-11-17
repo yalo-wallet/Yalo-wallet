@@ -1,40 +1,27 @@
-# YALO Wallet
+# YALO Wallet — Solana Live Trading
 
-Premium multi-chain Web3 wallet and trading platform for Ethereum Mainnet, Base Mainnet, and Solana Mainnet.
+React + Vite wallet UI for Solana mainnet, Privy authentication/signing, LI.FI quote/execution, DexScreener token discovery/charting, and QR receive.
 
-## Current foundation
+## Cloudflare Pages setup
 
-- React, TypeScript, and Vite application.
-- Privy authentication entry point.
-- Supabase client initialization using a publishable key.
-- Premium responsive wallet dashboard.
-- Clear Coming Soon states for sections not yet connected to production services.
+1. Upload the contents of this folder to the GitHub repository connected to Cloudflare Pages.
+2. Build command: `npm run build`
+3. Build output directory: `dist`
+4. Add environment variables in Cloudflare Pages:
+   - `VITE_PRIVY_APP_ID` = your public Privy App ID
+   - `LIFI_API_KEY` = your LI.FI API key (secret; do not prefix with VITE)
+5. Redeploy.
 
-## Environment variables
+The LI.FI key is only read by `functions/api/lifi/quote.ts` on the server and is not bundled into the browser app.
 
-Set these in Cloudflare Pages:
+## Trading behavior
 
-| Name | Type | Purpose |
-| --- | --- | --- |
-| `VITE_PRIVY_APP_ID` | Variable | Public Privy application ID used by the browser |
-| `VITE_SUPABASE_URL` | Variable | Supabase project URL |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Variable | Supabase publishable key |
+- Token discovery and market charts use DexScreener public market data.
+- Quotes are requested from LI.FI through the Pages Function proxy.
+- A returned Solana transaction is deserialized and sent for explicit Privy wallet approval before broadcast.
+- A trade is only shown as confirmed after Solana RPC confirmation.
+- Not every token has a valid route or sufficient liquidity. Always verify mint addresses and quote details.
 
-Keep all private credentials server-side only. Do not add Privy app secrets, Supabase secret keys, LI.FI credentials, or Helius credentials to frontend variables or source control.
+## Important
 
-The Privy app ID currently configured as `PRIVY_APP_ID` in Cloudflare must also be added as `VITE_PRIVY_APP_ID` because Vite only exposes variables prefixed with `VITE_` to browser code. The app ID is public; the Privy app secret is not.
-
-## Local development
-
-```bash
-npm install
-npm run dev
-```
-
-## Production build
-
-```bash
-npm run build
-```
-
-Wallet balances, swaps, market feeds, portfolio history, and transaction indexing are not represented as live until their provider integrations and transaction flows are implemented and verified.
+This is an implementation starter that must be built and tested in your own Cloudflare Pages environment with your Privy and LI.FI credentials before mainnet use. Public RPC endpoints can rate-limit. Review each transaction before signing.
