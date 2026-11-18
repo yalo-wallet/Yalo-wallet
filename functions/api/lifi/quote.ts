@@ -27,9 +27,19 @@ export async function onRequestPost({ request, env }: PagesContext): Promise<Res
       method: 'GET',
       headers: { accept: 'application/json', 'x-lifi-api-key': env.LIFI_API_KEY },
     });
-    const result = await upstream.json();
+    const raw = await upstream.text();
+    let result: unknown;
+    try {
+      result = raw ? JSON.parse(raw) : null;
+    } catch {
+      return Response.json({ error: `LI.FI ya dawo da amsa mara kyau (HTTP ${upstream.status}): ${raw.slice(0, 200)}` }, { status: 502 });
+    }
+    if (result === null) {
+      return Response.json({ error: `LI.FI ya dawo da amsa fanko (HTTP ${upstream.status}).` }, { status: 502 });
+    }
     return Response.json(result, { status: upstream.status });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Unable to retrieve LI.FI quote.' }, { status: 500 });
   }
 }
+
