@@ -139,6 +139,7 @@ function App() {
   const [avatarUrl, setAvatarUrl] = useState('');
   const [hideBalance, setHideBalance] = useState(false);
   const scannerRef = useRef<Html5Qrcode | null>(null);
+  const quoteAtRef = useRef(0);
   const scannerElement = 'yalo-qr-reader';
 
   useEffect(() => {
@@ -252,6 +253,7 @@ function App() {
       try { data = JSON.parse(raw); } catch { throw new Error(`Amsar server ba JSON ba ce (HTTP ${response.status}): ${raw.slice(0, 120)}`); }
       if (!response.ok) throw new Error(data.message ?? data.error ?? `Ba a samu live quote ba (HTTP ${response.status}).`);
       if (!data.transactionRequest?.data) throw new Error('Ba a samu transaction da za a iya sa hannu ba ga wannan route.');
+      quoteAtRef.current = Date.now();
       setQuote(data as Quote);
     } catch (e) { setError(e instanceof Error ? e.message : 'Quote request failed.'); }
     finally { setBusy(false); }
@@ -259,6 +261,9 @@ function App() {
 
   async function executeTrade() {
     if (!solWallet || !quote?.transactionRequest?.data) return;
+    if (Date.now() - quoteAtRef.current > 30000) { setQuote(null); setError('Quote ya tsufa (fiye da dakika 30). Danna Get live quote kuma, sai ka tabbatar nan da nan.'); return; }
+    const spend = mode === 'buy' ? Number(amount) : 0;
+    if (solBalance !== null && solBalance < spend + 0.003) { setError(`SOL dinka bai isa ba. Kana da ${solBalance.toFixed(4)} SOL. Ana bukatar adadin swap da akalla kimanin 0.003 SOL na kudin network da na bude token account.`); return; }
     setBusy(true); setError(''); setMessage('Ana jiran izinin wallet…');
     try {
       const bytes = Uint8Array.from(atob(quote.transactionRequest.data), c => c.charCodeAt(0));
@@ -375,7 +380,7 @@ function App() {
               <label className="field-label">TOKEN TO {mode === 'buy' ? 'BUY' : 'SELL'}</label><div className="search-line"><input value={mintInput} onChange={e => setMintInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void searchToken(); }} placeholder="Token name, symbol or mint address" /><button className="search-button" onClick={() => void searchToken()} disabled={searching}>{searching ? <RefreshCw className="spin" /> : <Search />}</button></div>
               {pair && <div className="token-found"><div className="token-avatar">{tokenSymbol.slice(0,1)}</div><div className="token-info"><b>{tokenName} <span>{tokenSymbol}</span></b><small>{short(pair.baseToken.address)}</small></div><button className="copy-small" onClick={() => void copyText(pair.baseToken.address)}><Copy size={14} /></button><button className="copy-small" onClick={addWatchlist}><Star size={14} /></button></div>}
               <label className="field-label amount-label">{mode === 'buy' ? 'YOU PAY' : 'TOKEN AMOUNT'}</label><div className="amount-box"><input type="number" min="0" step="any" value={amount} onChange={e => { setAmount(e.target.value); setQuote(null); }} /><span className="asset-chip"><i className={mode === 'buy' ? 'sol-dot' : 'token-dot'} />{mode === 'buy' ? 'SOL' : tokenSymbol}<ChevronDown size={14} /></span></div>
-              <div className="balance-line"><span>Network</span><b>Solana Mainnet</b></div><div className="balance-line"><span>Slippage</span><b>0.50%</b></div>
+              <div className="balance-line"><span>Network</span><b>Solana Mainnet · {new URL(SOL_RPC_URL).hostname}</b></div><div className="balance-line"><span>Slippage</span><b>0.50%</b></div>
               {quote && <div className="quote-box"><div className="quote-title"><CheckCircle2 /> Live quote received</div><div className="quote-row"><span>Estimated receive</span><b>{quote.estimate?.toAmount ? `${(Number(quote.estimate.toAmount) / 10 ** (mode === 'buy' ? tokenDecimals : 9)).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${mode === 'buy' ? tokenSymbol : 'SOL'}` : '—'}</b></div><div className="quote-row"><span>Minimum received</span><b>{quote.estimate?.toAmountMin ? (Number(quote.estimate.toAmountMin) / 10 ** (mode === 'buy' ? tokenDecimals : 9)).toLocaleString('en-US', { maximumFractionDigits: 6 }) : '—'}</b></div><div className="quote-row"><span>Route</span><b>{quote.toolDetails?.name ?? 'LI.FI route'}</b></div></div>}
               {error && <div className="error-box">{error}</div>}{message && <div className="message-box">{message}</div>}
               {!quote ? <button className="primary trade-action" disabled={busy || searching} onClick={() => void getQuote()}>{busy ? <><RefreshCw className="spin" /> Getting quote…</> : <>Get live quote <ArrowDownUp /></>}</button> : <button className="primary trade-action" disabled={busy} onClick={() => void executeTrade()}>{busy ? <><RefreshCw className="spin" /> Processing…</> : <>Confirm & sign swap <ShieldCheck /></>}</button>}
