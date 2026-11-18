@@ -1,27 +1,21 @@
-# YALO Wallet — Solana Live Trading
+# YALO Wallet update 2.1
 
-React + Vite wallet UI for Solana mainnet, Privy authentication/signing, LI.FI quote/execution, DexScreener token discovery/charting, and QR receive.
+## Included
+- Expanded wallet workspace: Overview, Swap, Send, Receive, Markets, Portfolio, Activity, Watchlist, Profile and Settings.
+- Solana live token search/quote/swap flow using LI.FI quote endpoint.
+- Native SOL send, EVM native ETH send on Ethereum and Base through the connected Privy EVM wallet.
+- Chain-aware receive QR payload and camera QR scanning.
+- DexScreener market search, chart and market metrics.
+- Existing dark navy / gold visual direction preserved.
 
-## Cloudflare Pages setup
-
-1. Upload the contents of this folder to the GitHub repository connected to Cloudflare Pages.
-2. Build command: `npm run build`
-3. Build output directory: `dist`
-4. Add environment variables in Cloudflare Pages:
-   - `VITE_PRIVY_APP_ID` = your public Privy App ID
-   - `LIFI_API_KEY` = your LI.FI API key (secret; do not prefix with VITE)
-5. Redeploy.
-
-The LI.FI key is only read by `functions/api/lifi/quote.ts` on the server and is not bundled into the browser app.
-
-## Trading behavior
-
-- Token discovery and market charts use DexScreener public market data.
-- Quotes are requested from LI.FI through the Pages Function proxy.
-- A returned Solana transaction is deserialized and sent for explicit Privy wallet approval before broadcast.
-- A trade is only shown as confirmed after Solana RPC confirmation.
-- Not every token has a valid route or sufficient liquidity. Always verify mint addresses and quote details.
-
-## Important
-
-This is an implementation starter that must be built and tested in your own Cloudflare Pages environment with your Privy and LI.FI credentials before mainnet use. Public RPC endpoints can rate-limit. Review each transaction before signing.
+## Important implementation notes
+- Configure `VITE_PRIVY_APP_ID` in Cloudflare Pages.
+- Configure `LIFI_API_KEY` as a Cloudflare Pages Secret (not a VITE_ variable).
+- The LI.FI endpoint is `functions/api/lifi/quote.ts`.
+- Run the normal project build after uploading. This archive was assembled from the source shared in chat; it has not been built against your live Cloudflare/Privy project in this environment.
+- Activity, watchlist, display name and avatar are session/browser state in this version, not synced to a backend.
+- Portfolio currently displays native SOL and EVM ETH balances; full SPL/ERC-20 token indexing is not yet implemented.
+- Swap currently executes a single returned Solana transaction request. Complex multi-step routes, token approvals and cross-chain execution are not covered by this simple transaction flow.
+- Send currently supports native SOL and native ETH only. SPL/ERC-20 token transfers are not included.
+- QR scanner requires camera permission and HTTPS (Cloudflare Pages provides HTTPS).
+- Always verify recipient address, network, amount and fees before signing.
